@@ -72,9 +72,9 @@ function PasscodeScreen({ onUnlock }) {
             </div>
           </div>
           <h1 className="text-5xl font-bold tracking-tight text-white mb-2" style={{ fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em" }}>
-            99xBet
+            Ledger
           </h1>
-          <p className="text-sm text-zinc-500 tracking-[0.3em] uppercase">Partner Ledger</p>
+          <p className="text-sm text-zinc-500 tracking-[0.3em] uppercase">Partner Access</p>
         </div>
 
         <div className="bg-zinc-900/60 backdrop-blur-xl border border-zinc-800 rounded-2xl p-8 shadow-2xl">
@@ -113,7 +113,7 @@ function PasscodeScreen({ onUnlock }) {
           </button>
 
           <p className="text-xs text-zinc-600 text-center mt-6">
-            Default passcode: <span className="text-zinc-400 font-mono">99xbet2026</span> · Change after first login
+            Authorized partners only
           </p>
         </div>
       </div>
@@ -846,7 +846,7 @@ function Settings({ entries }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `99xbet-ledger-${today()}.csv`;
+    a.download = `ledger-${today()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -953,8 +953,8 @@ export default function App() {
               <Sparkles className="w-5 h-5 text-black" strokeWidth={2.5} />
             </div>
             <div>
-              <div className="text-lg font-bold leading-none" style={{ fontFamily: "'Playfair Display', serif" }}>99xBet</div>
-              <div className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase">Partner Ledger</div>
+              <div className="text-lg font-bold leading-none" style={{ fontFamily: "'Playfair Display', serif" }}>Ledger</div>
+              <div className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase">Partner Access</div>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -1005,7 +1005,7 @@ export default function App() {
         )}
 
         <footer className="mt-12 text-center text-xs text-zinc-600">
-          99xBet Partner Ledger · Real-time sync · MMK
+          Partner Ledger · Real-time sync · MMK
         </footer>
       </main>
     </div>
