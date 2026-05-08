@@ -102,14 +102,23 @@ function PasscodeScreen({ onUnlock }) {
     setError("");
     try {
       const snap = await getDoc(CONFIG_DOC);
-      const correct = snap.exists() ? snap.data().passcode : DEFAULT_PASSCODE;
+      const data = snap.exists() ? snap.data() : null;
+      const editorPasscode = data?.passcode || DEFAULT_PASSCODE;
+      const viewerPasscode = data?.viewerPasscode || null;
+
       if (!snap.exists()) {
-        // First-time setup — write default
+        // First-time setup — write default editor passcode
         await setDoc(CONFIG_DOC, { passcode: DEFAULT_PASSCODE });
       }
-      if (code === correct) {
+
+      if (code === editorPasscode) {
         sessionStorage.setItem("99xbet:unlocked", "1");
-        onUnlock();
+        sessionStorage.setItem("99xbet:role", "editor");
+        onUnlock("editor");
+      } else if (viewerPasscode && code === viewerPasscode) {
+        sessionStorage.setItem("99xbet:unlocked", "1");
+        sessionStorage.setItem("99xbet:role", "viewer");
+        onUnlock("viewer");
       } else {
         setError("Incorrect passcode");
         setCode("");
@@ -882,7 +891,7 @@ function Dashboard({ entries }) {
 }
 
 // ---------- HISTORY ----------
-function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
+function History({ entries, onDeleteTransaction, onDeleteLegacy, readOnly = false }) {
   const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date));
   const [expanded, setExpanded] = useState(null); // date string
   const [confirmTxId, setConfirmTxId] = useState(null);
@@ -986,7 +995,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                       <p className="text-xs text-zinc-500 italic mb-3">
                         This is a historical summary entry — no individual transaction detail available.
                       </p>
-                      {confirmDayId === day.date ? (
+                      {!readOnly && (confirmDayId === day.date ? (
                         <div className="flex gap-2">
                           <button onClick={() => { onDeleteLegacy(day.date); setConfirmDayId(null); }} className="text-rose-400 text-xs font-semibold">Confirm delete day</button>
                           <button onClick={() => setConfirmDayId(null)} className="text-zinc-500 text-xs">Cancel</button>
@@ -995,7 +1004,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                         <button onClick={() => setConfirmDayId(day.date)} className="text-zinc-500 hover:text-rose-400 text-xs flex items-center gap-1">
                           <Trash2 className="w-3 h-3" /> Delete entire day
                         </button>
-                      )}
+                      ))}
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -1009,7 +1018,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                               Mkt: {fmtCompact(day.marketing - day.transactions.filter(t => t.kind === "marketing").reduce((s, t) => s + t.amount, 0))}
                             </div>
                           </div>
-                          {confirmDayId === day.date ? (
+                          {!readOnly && (confirmDayId === day.date ? (
                             <div className="flex gap-2">
                               <button onClick={() => { onDeleteLegacy(day.date); setConfirmDayId(null); }} className="text-rose-400 text-xs font-semibold">Delete</button>
                               <button onClick={() => setConfirmDayId(null)} className="text-zinc-500 text-xs">Cancel</button>
@@ -1018,7 +1027,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                             <button onClick={() => setConfirmDayId(day.date)} className="text-zinc-500 hover:text-rose-400">
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
-                          )}
+                          ))}
                         </div>
                       )}
 
@@ -1041,7 +1050,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                                 {tx.notes && <div className="text-xs text-zinc-400 italic mt-1">{tx.notes}</div>}
                               </div>
                             </div>
-                            {confirmTxId === tx.id ? (
+                            {!readOnly && (confirmTxId === tx.id ? (
                               <div className="flex gap-2 flex-shrink-0">
                                 <button onClick={() => { onDeleteTransaction(tx.id); setConfirmTxId(null); }} className="text-rose-400 text-xs font-semibold">Confirm</button>
                                 <button onClick={() => setConfirmTxId(null)} className="text-zinc-500 text-xs">Cancel</button>
@@ -1050,7 +1059,7 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy }) {
                               <button onClick={() => setConfirmTxId(tx.id)} className="text-zinc-500 hover:text-rose-400 flex-shrink-0">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                            )}
+                            ))}
                           </div>
                         </div>
                       ))}
@@ -1234,21 +1243,106 @@ function Settings({ entries }) {
   const [err, setErr] = useState("");
   const [working, setWorking] = useState(false);
 
+  // Viewer passcode state
+  const [viewerCurrent, setViewerCurrent] = useState("");
+  const [viewerNew, setViewerNew] = useState("");
+  const [viewerConfirm, setViewerConfirm] = useState("");
+  const [viewerMsg, setViewerMsg] = useState("");
+  const [viewerErr, setViewerErr] = useState("");
+  const [viewerWorking, setViewerWorking] = useState(false);
+  const [viewerExists, setViewerExists] = useState(false);
+
+  // Check whether a viewer passcode is already set (so we know whether to require current)
+  useEffect(() => {
+    (async () => {
+      try {
+        const snap = await getDoc(CONFIG_DOC);
+        setViewerExists(snap.exists() && !!snap.data().viewerPasscode);
+      } catch { /* ignore */ }
+    })();
+  }, [viewerMsg]);
+
   const handleChange = async () => {
     setMsg(""); setErr(""); setWorking(true);
     try {
       const snap = await getDoc(CONFIG_DOC);
-      const correct = snap.exists() ? snap.data().passcode : DEFAULT_PASSCODE;
+      const data = snap.exists() ? snap.data() : {};
+      const correct = data.passcode || DEFAULT_PASSCODE;
       if (current !== correct) { setErr("Current passcode is wrong"); setWorking(false); return; }
       if (next.length < 4) { setErr("New passcode must be at least 4 characters"); setWorking(false); return; }
       if (next !== confirm) { setErr("New passcodes don't match"); setWorking(false); return; }
-      await setDoc(CONFIG_DOC, { passcode: next });
-      setMsg("Passcode updated for all partners");
+      if (data.viewerPasscode && next === data.viewerPasscode) {
+        setErr("Editor passcode can't be the same as viewer passcode");
+        setWorking(false);
+        return;
+      }
+      // Preserve other fields (like viewerPasscode) by spreading
+      await setDoc(CONFIG_DOC, { ...data, passcode: next });
+      setMsg("Editor passcode updated");
       setCurrent(""); setNext(""); setConfirm("");
     } catch (e) {
       setErr("Update failed: " + e.message);
     }
     setWorking(false);
+  };
+
+  const handleViewerChange = async () => {
+    setViewerMsg(""); setViewerErr(""); setViewerWorking(true);
+    try {
+      const snap = await getDoc(CONFIG_DOC);
+      const data = snap.exists() ? snap.data() : {};
+      // Editor passcode is required to set/change the viewer passcode
+      const editorCorrect = data.passcode || DEFAULT_PASSCODE;
+      if (viewerCurrent !== editorCorrect) {
+        setViewerErr("Enter your editor passcode to change viewer passcode");
+        setViewerWorking(false);
+        return;
+      }
+      if (viewerNew.length < 4) {
+        setViewerErr("Viewer passcode must be at least 4 characters");
+        setViewerWorking(false);
+        return;
+      }
+      if (viewerNew !== viewerConfirm) {
+        setViewerErr("New viewer passcodes don't match");
+        setViewerWorking(false);
+        return;
+      }
+      if (viewerNew === editorCorrect) {
+        setViewerErr("Viewer passcode can't be the same as editor passcode");
+        setViewerWorking(false);
+        return;
+      }
+      await setDoc(CONFIG_DOC, { ...data, viewerPasscode: viewerNew });
+      setViewerMsg("Viewer passcode set. Share it with read-only partners.");
+      setViewerCurrent(""); setViewerNew(""); setViewerConfirm("");
+    } catch (e) {
+      setViewerErr("Update failed: " + e.message);
+    }
+    setViewerWorking(false);
+  };
+
+  const handleViewerRemove = async () => {
+    if (!window.confirm("Remove the viewer passcode? Existing viewers will be locked out next time they log in.")) return;
+    setViewerMsg(""); setViewerErr(""); setViewerWorking(true);
+    try {
+      const snap = await getDoc(CONFIG_DOC);
+      const data = snap.exists() ? snap.data() : {};
+      const editorCorrect = data.passcode || DEFAULT_PASSCODE;
+      if (viewerCurrent !== editorCorrect) {
+        setViewerErr("Enter your editor passcode to remove viewer passcode");
+        setViewerWorking(false);
+        return;
+      }
+      const { viewerPasscode, ...rest } = data;
+      // Re-write doc without viewerPasscode field
+      await setDoc(CONFIG_DOC, rest);
+      setViewerMsg("Viewer passcode removed");
+      setViewerCurrent(""); setViewerNew(""); setViewerConfirm("");
+    } catch (e) {
+      setViewerErr("Remove failed: " + e.message);
+    }
+    setViewerWorking(false);
   };
 
   const exportCSV = () => {
@@ -1293,6 +1387,44 @@ function Settings({ entries }) {
       </div>
 
       <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 md:p-8 max-w-xl">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>Viewer Passcode</h3>
+          {viewerExists && (
+            <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20">Active</span>
+          )}
+        </div>
+        <p className="text-xs text-zinc-500 mb-6">
+          {viewerExists
+            ? "A viewer passcode is set. Partners using it can see Dashboard, Monthly, and History but cannot add, edit, or delete anything."
+            : "Set a separate passcode for partners who should only view data, not edit it. They'll see Dashboard, Monthly, and History only."}
+        </p>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wide">Your Editor Passcode</label>
+            <input type="password" value={viewerCurrent} onChange={(e) => setViewerCurrent(e.target.value)} placeholder="Required to make changes" className="w-full bg-black/40 border border-zinc-800 rounded-lg px-4 py-3 text-white outline-none focus:border-amber-400/60" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wide">{viewerExists ? "New Viewer Passcode" : "Viewer Passcode"}</label>
+            <input type="password" value={viewerNew} onChange={(e) => setViewerNew(e.target.value)} className="w-full bg-black/40 border border-zinc-800 rounded-lg px-4 py-3 text-white outline-none focus:border-amber-400/60" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wide">Confirm Viewer Passcode</label>
+            <input type="password" value={viewerConfirm} onChange={(e) => setViewerConfirm(e.target.value)} className="w-full bg-black/40 border border-zinc-800 rounded-lg px-4 py-3 text-white outline-none focus:border-amber-400/60" />
+          </div>
+          {viewerErr && <p className="text-rose-400 text-sm">{viewerErr}</p>}
+          {viewerMsg && <p className="text-emerald-400 text-sm">{viewerMsg}</p>}
+          <button onClick={handleViewerChange} disabled={viewerWorking} className="w-full py-3 rounded-lg font-semibold text-black hover:opacity-90 active:scale-[0.98] transition disabled:opacity-50" style={{ background: "linear-gradient(135deg, #d4af37 0%, #f4d65f 100%)" }}>
+            {viewerWorking ? "Updating…" : viewerExists ? "Update Viewer Passcode" : "Set Viewer Passcode"}
+          </button>
+          {viewerExists && (
+            <button onClick={handleViewerRemove} disabled={viewerWorking} className="w-full py-3 rounded-lg font-medium text-rose-400 border border-rose-400/30 hover:bg-rose-400/10 transition disabled:opacity-50">
+              Remove Viewer Passcode
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 md:p-8 max-w-xl">
         <h3 className="text-xl font-bold text-white mb-1" style={{ fontFamily: "'Playfair Display', serif" }}>Export Data</h3>
         <p className="text-xs text-zinc-500 mb-6">Download a CSV of the full ledger (daily totals).</p>
         <button onClick={exportCSV} className="flex items-center gap-2 px-4 py-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white text-sm font-medium">
@@ -1306,11 +1438,17 @@ function Settings({ entries }) {
 // ---------- MAIN APP ----------
 export default function App() {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem("99xbet:unlocked") === "1");
+  const [role, setRole] = useState(() => sessionStorage.getItem("99xbet:role") || "editor");
   const [legacyEntries, setLegacyEntries] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [tab, setTab] = useState("entry");
+  // Viewers default to dashboard; editors keep "entry" as default
+  const [tab, setTab] = useState(() =>
+    sessionStorage.getItem("99xbet:role") === "viewer" ? "dashboard" : "entry"
+  );
   const [online, setOnline] = useState(navigator.onLine);
   const [loading, setLoading] = useState(true);
+
+  const isViewer = role === "viewer";
 
   useEffect(() => {
     const goOnline = () => setOnline(true);
@@ -1378,10 +1516,17 @@ export default function App() {
 
   const handleLock = () => {
     sessionStorage.removeItem("99xbet:unlocked");
+    sessionStorage.removeItem("99xbet:role");
     setUnlocked(false);
+    setRole("editor");
+    setTab("entry");
   };
 
-  if (!unlocked) return <PasscodeScreen onUnlock={() => setUnlocked(true)} />;
+  if (!unlocked) return <PasscodeScreen onUnlock={(r) => {
+    setRole(r);
+    setUnlocked(true);
+    setTab(r === "viewer" ? "dashboard" : "entry");
+  }} />;
 
   // Build the unified day-level data the rest of the app consumes
   const dayMap = buildDayMap(legacyEntries, transactions);
@@ -1398,10 +1543,16 @@ export default function App() {
             </div>
             <div>
               <div className="text-lg font-bold leading-none" style={{ fontFamily: "'Playfair Display', serif" }}>Ledger</div>
-              <div className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase">Partner Access</div>
+              <div className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase">{isViewer ? "View Only" : "Partner Access"}</div>
             </div>
           </div>
           <div className="flex items-center gap-4">
+            {isViewer && (
+              <div className="flex items-center gap-1.5 text-xs text-amber-400/80 px-2 py-1 rounded border border-amber-400/20 bg-amber-400/5">
+                <Eye className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">View Only</span>
+              </div>
+            )}
             <div className={`flex items-center gap-1.5 text-xs ${online ? "text-emerald-400" : "text-rose-400"}`}>
               {online ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
               <span className="hidden sm:inline">{online ? "Live" : "Offline"}</span>
@@ -1415,24 +1566,26 @@ export default function App() {
 
         <div className="max-w-6xl mx-auto px-4 md:px-6 flex gap-1 overflow-x-auto">
           {[
-            { id: "entry", label: "New Entry", icon: <Plus className="w-4 h-4" /> },
-            { id: "upload", label: "Upload Slips", icon: <Upload className="w-4 h-4" /> },
+            { id: "entry", label: "New Entry", icon: <Plus className="w-4 h-4" />, editorOnly: true },
+            { id: "upload", label: "Upload Slips", icon: <Upload className="w-4 h-4" />, editorOnly: true },
             { id: "dashboard", label: "Dashboard", icon: <BarChart3 className="w-4 h-4" /> },
             { id: "monthly", label: "Monthly", icon: <CalendarDays className="w-4 h-4" /> },
             { id: "history", label: "History", icon: <FileText className="w-4 h-4" /> },
-            { id: "settings", label: "Settings", icon: <Lock className="w-4 h-4" /> },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition ${
-                tab === t.id ? "border-amber-400 text-white" : "border-transparent text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {t.icon}
-              {t.label}
-            </button>
-          ))}
+            { id: "settings", label: "Settings", icon: <Lock className="w-4 h-4" />, editorOnly: true },
+          ]
+            .filter((t) => !t.editorOnly || !isViewer)
+            .map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition ${
+                  tab === t.id ? "border-amber-400 text-white" : "border-transparent text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {t.icon}
+                {t.label}
+              </button>
+            ))}
         </div>
       </header>
 
@@ -1441,12 +1594,12 @@ export default function App() {
           <div className="text-center py-20 text-zinc-500">Connecting to Firebase…</div>
         ) : (
           <>
-            {tab === "entry" && <EntryForm onSave={saveTransaction} dayMap={dayMap} />}
-            {tab === "upload" && <SlipUpload onSave={saveTransaction} dayMap={dayMap} />}
+            {tab === "entry" && !isViewer && <EntryForm onSave={saveTransaction} dayMap={dayMap} />}
+            {tab === "upload" && !isViewer && <SlipUpload onSave={saveTransaction} dayMap={dayMap} />}
             {tab === "dashboard" && <Dashboard entries={entries} />}
             {tab === "monthly" && <Monthly entries={entries} />}
-            {tab === "history" && <History entries={entries} onDeleteTransaction={deleteTransaction} onDeleteLegacy={deleteLegacyEntry} />}
-            {tab === "settings" && <Settings entries={entries} />}
+            {tab === "history" && <History entries={entries} onDeleteTransaction={deleteTransaction} onDeleteLegacy={deleteLegacyEntry} readOnly={isViewer} />}
+            {tab === "settings" && !isViewer && <Settings entries={entries} />}
           </>
         )}
 
