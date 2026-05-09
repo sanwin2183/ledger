@@ -861,6 +861,63 @@ function KpiCard({ label, value, sub, accent, icon }) {
 }
 
 // ---------- DASHBOARD ----------
+// Custom tooltip for Daily P/L charts — shows Date, Profit, Income, Outgoing.
+// Marketing is intentionally excluded (treated as a monthly cost in the dashboard).
+function DailyPLTooltip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  // Prefer fullDate (YYYY-MM-DD) for nice formatting; fall back to whatever's there
+  const dateLabel = d.fullDate
+    ? new Date(d.fullDate + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : d.date;
+  const profitColor = d.profit >= 0 ? "#10b981" : "#f43f5e";
+  return (
+    <div style={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 8, padding: "10px 12px", minWidth: 160 }}>
+      <div style={{ color: "#fafafa", fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{dateLabel}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: "#a1a1aa" }}>Profit</span>
+        <span style={{ color: profitColor, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmt(d.profit)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: "#a1a1aa" }}>Income</span>
+        <span style={{ color: "#10b981", fontVariantNumeric: "tabular-nums" }}>{fmt(d.income || 0)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12 }}>
+        <span style={{ color: "#a1a1aa" }}>Outgoing</span>
+        <span style={{ color: "#f43f5e", fontVariantNumeric: "tabular-nums" }}>{fmt(d.expensesOnly != null ? d.expensesOnly : (d.expenses || 0))}</span>
+      </div>
+    </div>
+  );
+}
+
+// Tooltip for Monthly P&L chart — shows Month, Profit, Income, Outgoing, Marketing
+function MonthlyPLTooltip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  const profitColor = d.profit >= 0 ? "#10b981" : "#f43f5e";
+  return (
+    <div style={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 8, padding: "10px 12px", minWidth: 180 }}>
+      <div style={{ color: "#fafafa", fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{d.label}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: "#a1a1aa" }}>Profit</span>
+        <span style={{ color: profitColor, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmt(d.profit)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: "#a1a1aa" }}>Income</span>
+        <span style={{ color: "#10b981", fontVariantNumeric: "tabular-nums" }}>{fmt(d.income)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, marginBottom: 3 }}>
+        <span style={{ color: "#a1a1aa" }}>Outgoing</span>
+        <span style={{ color: "#f43f5e", fontVariantNumeric: "tabular-nums" }}>{fmt(d.expenses)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12 }}>
+        <span style={{ color: "#a1a1aa" }}>Marketing</span>
+        <span style={{ color: "#f59e0b", fontVariantNumeric: "tabular-nums" }}>{fmt(d.marketing)}</span>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ entries }) {
   const stats = useMemo(() => {
     const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
@@ -877,17 +934,41 @@ function Dashboard({ entries }) {
       running += e.profit;
       return {
         date: e.date.slice(5),
+        fullDate: e.date,           // YYYY-MM-DD for tooltip formatting
         income: e.income,
-        expenses: e.expenses + e.marketing,
+        expensesOnly: e.expenses,   // expenses without marketing
+        marketing: e.marketing,
+        expenses: e.expenses + e.marketing, // legacy combined (kept for cumulative chart)
         profit: e.profit,
         cumulative: running,
       };
     });
 
+    // Monthly aggregation — used by Monthly P&L + Monthly Marketing charts
+    const monthMap = {};
+    sorted.forEach((e) => {
+      const ym = e.date.slice(0, 7); // YYYY-MM
+      if (!monthMap[ym]) {
+        monthMap[ym] = { ym, income: 0, expenses: 0, marketing: 0, profit: 0 };
+      }
+      monthMap[ym].income += e.income;
+      monthMap[ym].expenses += e.expenses;
+      monthMap[ym].marketing += e.marketing;
+      monthMap[ym].profit += e.profit;
+    });
+    const monthlyData = Object.values(monthMap)
+      .sort((a, b) => a.ym.localeCompare(b.ym))
+      .map((m) => ({
+        ...m,
+        // Short label like "May" or "May 26" for the X axis
+        label: new Date(m.ym + "-01T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+      }));
+
     return {
       totalIncome, totalExpenses, totalMarketing, totalProfit,
       sum7, margin, chartData,
       last30Data: chartData.slice(-30),
+      monthlyData,
       bestDay: sorted.length ? sorted.reduce((a, b) => (b.profit > a.profit ? b : a)) : null,
       worstDay: sorted.length ? sorted.reduce((a, b) => (b.profit < a.profit ? b : a)) : null,
     };
@@ -951,11 +1032,7 @@ function Dashboard({ entries }) {
               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
               <XAxis dataKey="date" stroke="#71717a" fontSize={11} />
               <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtCompact} />
-              <Tooltip
-                contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 8 }}
-                labelStyle={{ color: "#a1a1aa" }}
-                formatter={(v) => fmt(v)}
-              />
+              <Tooltip content={<DailyPLTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
               <Bar dataKey="profit" radius={[4, 4, 0, 0]}>
                 {stats.last30Data.map((d, i) => (
                   <Cell key={i} fill={d.profit >= 0 ? "#10b981" : "#f43f5e"} />
@@ -965,6 +1042,55 @@ function Dashboard({ entries }) {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {stats.monthlyData.length > 0 && (
+        <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>Monthly P&amp;L</h3>
+            <p className="text-xs text-zinc-500">Income minus expenses minus marketing, per month</p>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.monthlyData}>
+                <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+                <XAxis dataKey="label" stroke="#71717a" fontSize={11} />
+                <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtCompact} />
+                <Tooltip content={<MonthlyPLTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                <Bar dataKey="profit" radius={[4, 4, 0, 0]}>
+                  {stats.monthlyData.map((d, i) => (
+                    <Cell key={i} fill={d.profit >= 0 ? "#10b981" : "#f43f5e"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {stats.monthlyData.some((m) => m.marketing > 0) && (
+        <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>Monthly Marketing</h3>
+            <p className="text-xs text-zinc-500">Marketing spend per month</p>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats.monthlyData}>
+                <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
+                <XAxis dataKey="label" stroke="#71717a" fontSize={11} />
+                <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtCompact} />
+                <Tooltip
+                  contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 8 }}
+                  labelStyle={{ color: "#fafafa", fontWeight: 600 }}
+                  formatter={(v) => [fmt(v), "Marketing"]}
+                  cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                />
+                <Bar dataKey="marketing" radius={[4, 4, 0, 0]} fill="#f59e0b" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {stats.bestDay && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1219,7 +1345,14 @@ function Monthly({ entries }) {
 
   const dailyData = [...selectedMonth.entries]
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map((e) => ({ date: e.date.slice(8), profit: e.profit }));
+    .map((e) => ({
+      date: e.date.slice(8),
+      fullDate: e.date,
+      profit: e.profit,
+      income: e.income,
+      expensesOnly: e.expenses,
+      marketing: e.marketing,
+    }));
 
   const compare = prevMonth ? {
     profitDelta: selectedMonth.profit - prevMonth.profit,
@@ -1286,7 +1419,7 @@ function Monthly({ entries }) {
               <CartesianGrid stroke="#27272a" strokeDasharray="3 3" />
               <XAxis dataKey="date" stroke="#71717a" fontSize={11} />
               <YAxis stroke="#71717a" fontSize={11} tickFormatter={fmtCompact} />
-              <Tooltip contentStyle={{ background: "#0a0a0a", border: "1px solid #27272a", borderRadius: 8 }} labelStyle={{ color: "#a1a1aa" }} formatter={(v) => fmt(v)} />
+              <Tooltip content={<DailyPLTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
               <Bar dataKey="profit" radius={[4, 4, 0, 0]}>
                 {dailyData.map((d, i) => <Cell key={i} fill={d.profit >= 0 ? "#10b981" : "#f43f5e"} />)}
               </Bar>
