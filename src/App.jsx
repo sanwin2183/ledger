@@ -961,7 +961,7 @@ function Dashboard({ entries }) {
       .map((m) => ({
         ...m,
         // Short label like "May" or "May 26" for the X axis
-        label: new Date(m.ym + "-01T00:00:00").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+        label: new Date(m.ym + "-01T00:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" }),
       }));
 
     return {
