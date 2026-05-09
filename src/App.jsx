@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { TrendingUp, TrendingDown, DollarSign, Megaphone, Lock, LogOut, Plus, Calendar, BarChart3, FileText, Trash2, Eye, EyeOff, Sparkles, Download, Wifi, WifiOff, CalendarDays, ChevronLeft, ChevronRight, Upload, Image as ImageIcon, Loader2, X, ArrowDownCircle, ArrowUpCircle, Users, PiggyBank, HandCoins } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Megaphone, Lock, LogOut, Plus, Calendar, BarChart3, FileText, Trash2, Eye, EyeOff, Sparkles, Download, Wifi, WifiOff, CalendarDays, ChevronLeft, ChevronRight, Upload, Image as ImageIcon, Loader2, X, ArrowDownCircle, ArrowUpCircle, Users, PiggyBank, HandCoins, RefreshCw } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, Cell } from "recharts";
 import {
   collection, doc, setDoc, deleteDoc, onSnapshot, getDoc,
@@ -15,6 +15,7 @@ const CONFIG_DOC = doc(db, "config", "main");
 const ENTRIES_COL = collection(db, "entries");
 const TX_COL = collection(db, "transactions");
 const PARTNERS_COL = collection(db, "partners");
+const RECURRING_COL = collection(db, "recurringExpenses");
 
 // ---------- HELPERS ----------
 // Full-number currency formatter — used everywhere except chart Y-axes.
@@ -39,6 +40,28 @@ const fmtAxis = (n) => {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+// Advance an ISO date string by one cycle (monthly, yearly, or weekly).
+// Handles month-end correctly (Jan 31 → Feb 28).
+function advanceDate(isoDate, cycle) {
+  const d = new Date(isoDate + "T00:00:00");
+  if (cycle === "weekly") {
+    d.setDate(d.getDate() + 7);
+  } else if (cycle === "yearly") {
+    d.setFullYear(d.getFullYear() + 1);
+  } else {
+    // monthly (default)
+    const targetMonth = d.getMonth() + 1;
+    const targetYear = d.getFullYear() + (targetMonth > 11 ? 1 : 0);
+    const normalizedMonth = targetMonth % 12;
+    const targetDay = d.getDate();
+    // Move to first of target month, then cap day at month-end
+    d.setFullYear(targetYear, normalizedMonth, 1);
+    const lastDay = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+    d.setDate(Math.min(targetDay, lastDay));
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 // ---------- DATA MODEL HELPERS ----------
 // We have two collections:
 //   "entries"     - legacy daily summary entries (one per date) — historical/imported
@@ -57,6 +80,10 @@ function buildDayMap(legacyEntries, transactions) {
       date: e.date,
       income: e.income || 0,
       expenses: e.expenses || 0,
+      // Legacy entries don't have fixed/variable split — count all as variable
+      // by default. They can be retro-tagged if needed via direct edit.
+      fixedExpenses: 0,
+      variableExpenses: e.expenses || 0,
       marketing: e.marketing || 0,
       profit: 0,
       partner: e.partner || "—",
@@ -73,6 +100,8 @@ function buildDayMap(legacyEntries, transactions) {
         date: t.date,
         income: 0,
         expenses: 0,
+        fixedExpenses: 0,
+        variableExpenses: 0,
         marketing: 0,
         profit: 0,
         partner: t.partner || "—",
@@ -82,7 +111,12 @@ function buildDayMap(legacyEntries, transactions) {
       };
     }
     if (t.kind === "income") map[t.date].income += t.amount;
-    else if (t.kind === "expense") map[t.date].expenses += t.amount;
+    else if (t.kind === "expense") {
+      map[t.date].expenses += t.amount;
+      // Default to variable if not tagged (back-compat with old expense records)
+      if (t.category === "fixed") map[t.date].fixedExpenses += t.amount;
+      else map[t.date].variableExpenses += t.amount;
+    }
     else if (t.kind === "marketing") map[t.date].marketing += t.amount;
     map[t.date].transactions.push(t);
   });
@@ -650,6 +684,7 @@ function EntryForm({ onSave, dayMap, partners = [] }) {
   const [name, setName] = useState("");
   const [partner, setPartner] = useState(localStorage.getItem("99xbet:partner") || "");
   const [partnerId, setPartnerId] = useState("");  // for capital/distribution
+  const [expenseCategory, setExpenseCategory] = useState("variable"); // "fixed" or "variable"
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -687,6 +722,10 @@ function EntryForm({ onSave, dayMap, partners = [] }) {
     };
     if (isPartnerKind) {
       tx.partnerId = partnerId;
+    }
+    // Tag expense transactions as fixed or variable for break-even reporting
+    if (kind === "expense") {
+      tx.category = expenseCategory;
     }
 
     try {
@@ -766,6 +805,37 @@ function EntryForm({ onSave, dayMap, partners = [] }) {
             </p>
           )}
         </div>
+
+        {kind === "expense" && (
+          <div>
+            <label className="block text-xs font-semibold text-zinc-400 mb-2 tracking-wide uppercase">Category</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setExpenseCategory("variable")}
+                className={`flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 text-sm font-medium transition ${
+                  expenseCategory === "variable"
+                    ? "border-rose-400/50 bg-rose-400/10 text-rose-300"
+                    : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                Variable
+              </button>
+              <button
+                onClick={() => setExpenseCategory("fixed")}
+                className={`flex items-center justify-center gap-2 py-2.5 rounded-lg border-2 text-sm font-medium transition ${
+                  expenseCategory === "fixed"
+                    ? "border-rose-400/50 bg-rose-400/10 text-rose-300"
+                    : "border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                Fixed
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mt-1">
+              Fixed = recurring monthly costs (server, salaries). Variable = one-off purchases.
+            </p>
+          </div>
+        )}
 
         <div>
           <label className="block text-xs font-semibold text-zinc-400 mb-2 tracking-wide uppercase">Amount ({CURRENCY_CODE})</label>
@@ -968,6 +1038,8 @@ function Dashboard({ entries }) {
     const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
     const totalIncome = entries.reduce((s, e) => s + e.income, 0);
     const totalExpenses = entries.reduce((s, e) => s + e.expenses, 0);
+    const totalFixed = entries.reduce((s, e) => s + (e.fixedExpenses || 0), 0);
+    const totalVariable = entries.reduce((s, e) => s + (e.variableExpenses || 0), 0);
     const totalMarketing = entries.reduce((s, e) => s + e.marketing, 0);
     const totalProfit = totalIncome - totalExpenses - totalMarketing;
     const last7 = sorted.slice(-7);
@@ -1010,7 +1082,7 @@ function Dashboard({ entries }) {
       }));
 
     return {
-      totalIncome, totalExpenses, totalMarketing, totalProfit,
+      totalIncome, totalExpenses, totalFixed, totalVariable, totalMarketing, totalProfit,
       sum7, margin, chartData,
       last30Data: chartData.slice(-30),
       monthlyData,
@@ -1034,7 +1106,7 @@ function Dashboard({ entries }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KpiCard label="Total Profit" value={fmt(stats.totalProfit)} sub={`${stats.margin.toFixed(1)}% margin`} accent={stats.totalProfit >= 0 ? "#10b981" : "#f43f5e"} icon={<DollarSign className="w-4 h-4" />} />
         <KpiCard label="Total Revenue" value={fmt(stats.totalIncome)} sub={`${entries.length} entries`} accent="#d4af37" icon={<TrendingUp className="w-4 h-4" />} />
-        <KpiCard label="Total Costs" value={fmt(stats.totalExpenses + stats.totalMarketing)} sub={`Mkt: ${fmt(stats.totalMarketing)}`} accent="#f43f5e" icon={<TrendingDown className="w-4 h-4" />} />
+        <KpiCard label="Total Costs" value={fmt(stats.totalExpenses + stats.totalMarketing)} sub={`Fixed: ${fmt(stats.totalFixed)} · Var: ${fmt(stats.totalVariable)}`} accent="#f43f5e" icon={<TrendingDown className="w-4 h-4" />} />
         <KpiCard label="Last 7 Days" value={fmt(stats.sum7)} sub="Net P/L" accent="#0ea5e9" icon={<Calendar className="w-4 h-4" />} />
       </div>
 
@@ -1309,7 +1381,15 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy, readOnly = fals
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className={`text-sm font-bold ${kindStyle(tx.kind)}`}>{fmt(tx.amount)}</span>
                                   <span className="text-[10px] uppercase tracking-wider text-zinc-500">{kindLabel(tx.kind)}</span>
+                                  {tx.kind === "expense" && tx.category === "fixed" && (
+                                    <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-400/10 text-violet-400 border border-violet-400/20">Fixed</span>
+                                  )}
                                   {tx.source === "slip" && <span className="text-[10px] uppercase tracking-wider text-amber-400/80">Slip</span>}
+                                  {tx.source === "recurring" && (
+                                    <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-sky-400/10 text-sky-400 border border-sky-400/20 flex items-center gap-1">
+                                      <RefreshCw className="w-2.5 h-2.5" /> Auto
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-xs text-zinc-500 mt-0.5 truncate">
                                   {tx.time && <span>{tx.time}</span>}
@@ -1641,6 +1721,287 @@ function Partners({ entries, transactions, partners, readOnly = false }) {
   );
 }
 
+
+// ---------- RECURRING EXPENSES ----------
+function RecurringExpenses({ recurring, onSave, onDelete }) {
+  const [editing, setEditing] = useState(null); // recurring being edited, or "new"
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [cycle, setCycle] = useState("monthly");
+  const [category, setCategory] = useState("fixed");
+  const [nextDue, setNextDue] = useState(today());
+  const [notes, setNotes] = useState("");
+  const [working, setWorking] = useState(false);
+  const [err, setErr] = useState("");
+
+  const startNew = () => {
+    setEditing("new");
+    setName("");
+    setAmount("");
+    setCycle("monthly");
+    setCategory("fixed");
+    setNextDue(today());
+    setNotes("");
+    setErr("");
+  };
+  const startEdit = (r) => {
+    setEditing(r.id);
+    setName(r.name);
+    setAmount(String(r.amount));
+    setCycle(r.cycle || "monthly");
+    setCategory(r.category || "fixed");
+    setNextDue(r.nextDue || today());
+    setNotes(r.notes || "");
+    setErr("");
+  };
+  const cancel = () => {
+    setEditing(null);
+    setErr("");
+  };
+
+  const save = async () => {
+    setErr("");
+    const trimmed = name.trim();
+    const amt = parseFloat(amount);
+    if (!trimmed) { setErr("Name is required"); return; }
+    if (!amt || amt <= 0) { setErr("Amount must be greater than zero"); return; }
+    if (!nextDue) { setErr("Next due date is required"); return; }
+    setWorking(true);
+    try {
+      if (editing === "new") {
+        const id = "rec_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+        await onSave({
+          id,
+          name: trimmed,
+          amount: amt,
+          cycle,
+          category,
+          nextDue,
+          notes: notes.trim(),
+          status: "active",
+          createdAt: new Date().toISOString(),
+        });
+      } else {
+        const existing = recurring.find((r) => r.id === editing);
+        await onSave({
+          ...existing,
+          name: trimmed,
+          amount: amt,
+          cycle,
+          category,
+          nextDue,
+          notes: notes.trim(),
+        });
+      }
+      cancel();
+    } catch (e) {
+      setErr("Save failed: " + e.message);
+    }
+    setWorking(false);
+  };
+
+  const togglePause = async (r) => {
+    setWorking(true);
+    try {
+      await onSave({ ...r, status: r.status === "paused" ? "active" : "paused" });
+    } catch (e) {
+      console.error(e);
+    }
+    setWorking(false);
+  };
+
+  const remove = async (r) => {
+    if (!window.confirm(`Delete "${r.name}"? This will not remove transactions already auto-logged from this template.`)) return;
+    setWorking(true);
+    try {
+      await onDelete(r.id);
+    } catch (e) {
+      console.error(e);
+    }
+    setWorking(false);
+  };
+
+  const active = recurring.filter((r) => r.status !== "paused").sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const paused = recurring.filter((r) => r.status === "paused");
+
+  // Total monthly burn — normalize all cycles to monthly
+  const monthlyBurn = active.reduce((sum, r) => {
+    const factor = r.cycle === "weekly" ? 4.33 : r.cycle === "yearly" ? 1 / 12 : 1;
+    return sum + (r.amount || 0) * factor;
+  }, 0);
+  const fixedBurn = active.filter((r) => r.category === "fixed").reduce((sum, r) => {
+    const factor = r.cycle === "weekly" ? 4.33 : r.cycle === "yearly" ? 1 / 12 : 1;
+    return sum + (r.amount || 0) * factor;
+  }, 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <KpiCard label="Monthly Burn" value={fmt(monthlyBurn)} sub={`${active.length} active recurring expense${active.length === 1 ? "" : "s"}`} accent="#f43f5e" icon={<RefreshCw className="w-4 h-4" />} />
+        <KpiCard label="Fixed Monthly Costs" value={fmt(fixedBurn)} sub="Predictable, committed spending" accent="#a78bfa" icon={<TrendingDown className="w-4 h-4" />} />
+      </div>
+
+      <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 md:p-8">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>Recurring Expenses</h3>
+          <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded bg-amber-400/10 text-amber-400 border border-amber-400/20">
+            {active.length} active
+          </span>
+        </div>
+        <p className="text-xs text-zinc-500 mb-6">
+          Recurring expenses get auto-logged as transactions when their due date arrives. Pause anytime to stop auto-logging without deleting history.
+        </p>
+
+        {active.length === 0 && editing === null && (
+          <div className="text-center py-6">
+            <RefreshCw className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
+            <p className="text-sm text-zinc-500 mb-4">No recurring expenses yet. Add your first one below.</p>
+          </div>
+        )}
+
+        <div className="space-y-2 mb-4">
+          {active.map((r) => (
+            <div key={r.id} className="bg-black/30 border border-zinc-800 rounded-lg px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-white font-medium truncate">{r.name}</span>
+                    <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.category === "fixed" ? "bg-violet-400/10 text-violet-400 border border-violet-400/20" : "bg-zinc-700/40 text-zinc-400 border border-zinc-700"}`}>
+                      {r.category || "fixed"}
+                    </span>
+                  </div>
+                  <div className="text-xs text-zinc-500 mt-0.5">
+                    {fmt(r.amount)} · {r.cycle || "monthly"} · next: {r.nextDue}
+                  </div>
+                </div>
+                <div className="flex gap-1 flex-shrink-0 ml-2">
+                  <button onClick={() => startEdit(r)} className="text-xs text-zinc-400 hover:text-white px-2 py-1">Edit</button>
+                  <button onClick={() => togglePause(r)} className="text-xs text-amber-400 hover:text-amber-300 px-2 py-1">Pause</button>
+                  <button onClick={() => remove(r)} className="text-xs text-rose-400 hover:text-rose-300 px-2 py-1">Delete</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {editing && (
+          <div className="bg-black/30 border border-amber-400/30 rounded-lg p-4 mb-4 space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Server hosting"
+                className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-white outline-none focus:border-amber-400/60"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Amount ({CURRENCY_CODE})</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="0"
+                  className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-white outline-none focus:border-amber-400/60"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Cycle</label>
+                <select
+                  value={cycle}
+                  onChange={(e) => setCycle(e.target.value)}
+                  className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-white outline-none focus:border-amber-400/60"
+                >
+                  <option value="weekly" className="bg-zinc-900">Weekly</option>
+                  <option value="monthly" className="bg-zinc-900">Monthly</option>
+                  <option value="yearly" className="bg-zinc-900">Yearly</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Category</label>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    onClick={() => setCategory("variable")}
+                    className={`py-2 rounded-lg border-2 text-xs font-medium ${
+                      category === "variable" ? "border-rose-400/50 bg-rose-400/10 text-rose-300" : "border-zinc-800 text-zinc-500"
+                    }`}
+                  >
+                    Variable
+                  </button>
+                  <button
+                    onClick={() => setCategory("fixed")}
+                    className={`py-2 rounded-lg border-2 text-xs font-medium ${
+                      category === "fixed" ? "border-rose-400/50 bg-rose-400/10 text-rose-300" : "border-zinc-800 text-zinc-500"
+                    }`}
+                  >
+                    Fixed
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Next Due</label>
+                <input
+                  type="date" lang="en-US"
+                  value={nextDue}
+                  onChange={(e) => setNextDue(e.target.value)}
+                  className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-white outline-none focus:border-amber-400/60"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wide">Notes (optional)</label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Vendor, account, etc."
+                className="w-full bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-white outline-none focus:border-amber-400/60"
+              />
+            </div>
+            {err && <p className="text-rose-400 text-sm">{err}</p>}
+            <div className="flex gap-2">
+              <button onClick={save} disabled={working} className="px-4 py-2 rounded-lg font-medium text-black text-sm disabled:opacity-50" style={{ background: "linear-gradient(135deg, #d4af37 0%, #f4d65f 100%)" }}>
+                {working ? "Saving…" : "Save"}
+              </button>
+              <button onClick={cancel} className="px-4 py-2 rounded-lg text-zinc-400 text-sm hover:text-white">Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {!editing && (
+          <button onClick={startNew} className="w-full py-3 rounded-lg border-2 border-dashed border-zinc-700 hover:border-amber-400/60 text-zinc-400 hover:text-amber-300 text-sm font-medium transition flex items-center justify-center gap-2">
+            <Plus className="w-4 h-4" /> Add Recurring Expense
+          </button>
+        )}
+
+        {paused.length > 0 && (
+          <div className="mt-6 pt-6 border-t border-zinc-800">
+            <h4 className="text-xs uppercase tracking-wide text-zinc-500 font-semibold mb-3">Paused ({paused.length})</h4>
+            <div className="space-y-2">
+              {paused.map((r) => (
+                <div key={r.id} className="flex items-center justify-between bg-black/20 border border-zinc-800 rounded-lg px-4 py-2">
+                  <div>
+                    <div className="text-zinc-400 text-sm">{r.name}</div>
+                    <div className="text-xs text-zinc-600">{fmt(r.amount)} · {r.cycle}</div>
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={() => togglePause(r)} className="text-xs text-emerald-400 hover:text-emerald-300 px-2 py-1">Resume</button>
+                    <button onClick={() => remove(r)} className="text-xs text-rose-400 hover:text-rose-300 px-2 py-1">Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ---------- PARTNER MANAGER (Settings sub-component) ----------
 function PartnerManager({ partners, onSavePartner, onDeletePartner }) {
@@ -2028,6 +2389,7 @@ export default function App() {
   const [legacyEntries, setLegacyEntries] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [partners, setPartners] = useState([]);
+  const [recurring, setRecurring] = useState([]);
   // Viewers default to dashboard; editors keep "entry" as default
   const [tab, setTab] = useState(() =>
     sessionStorage.getItem("99xbet:role") === "viewer" ? "dashboard" : "entry"
@@ -2070,8 +2432,8 @@ export default function App() {
     // Need both: passcode-unlocked AND Firebase-authenticated
     if (!unlocked || !authUser) return;
     setLoading(true);
-    let entriesLoaded = false, txLoaded = false, partnersLoaded = false;
-    const checkDone = () => { if (entriesLoaded && txLoaded && partnersLoaded) setLoading(false); };
+    let entriesLoaded = false, txLoaded = false, partnersLoaded = false, recurringLoaded = false;
+    const checkDone = () => { if (entriesLoaded && txLoaded && partnersLoaded && recurringLoaded) setLoading(false); };
 
     const unsub1 = onSnapshot(
       ENTRIES_COL,
@@ -2118,7 +2480,22 @@ export default function App() {
         checkDone();
       }
     );
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = onSnapshot(
+      RECURRING_COL,
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push(d.data()));
+        setRecurring(list);
+        recurringLoaded = true;
+        checkDone();
+      },
+      (err) => {
+        console.error("Firestore recurring error:", err);
+        recurringLoaded = true;
+        checkDone();
+      }
+    );
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [unlocked, authUser]);
 
   // Save a single transaction (the new way)
@@ -2142,6 +2519,73 @@ export default function App() {
   const deletePartner = async (id) => {
     await deleteDoc(doc(db, "partners", id));
   };
+
+  // Recurring expense CRUD
+  const saveRecurring = async (r) => {
+    await setDoc(doc(db, "recurringExpenses", r.id), r);
+  };
+  const deleteRecurring = async (id) => {
+    await deleteDoc(doc(db, "recurringExpenses", id));
+  };
+
+  // Auto-create expense transactions for recurring expenses that are due.
+  // Runs whenever the recurring list updates. Uses deterministic IDs to prevent
+  // duplicates if this runs multiple times. Editors only — viewers shouldn't
+  // be writing data.
+  useEffect(() => {
+    if (!unlocked || !authUser || isViewer || recurring.length === 0) return;
+    const todayStr = today();
+    let cancelled = false;
+
+    const processOne = async (rec) => {
+      if (rec.status !== "active") return;
+      let due = rec.nextDue;
+      let updates = 0;
+      // Catch up: log every missed cycle until nextDue is in the future
+      while (due && due <= todayStr && updates < 60) {
+        if (cancelled) return;
+        const txId = `recurring_${rec.id}_${due}`;
+        const tx = {
+          id: txId,
+          date: due,
+          time: "00:00",
+          amount: rec.amount,
+          kind: "expense",
+          category: rec.category || "fixed",
+          name: rec.name,
+          notes: rec.notes ? `[Recurring] ${rec.notes}` : "[Recurring]",
+          partner: "—",
+          source: "recurring",
+          recurringId: rec.id,
+          timestamp: new Date().toISOString(),
+        };
+        try {
+          await setDoc(doc(db, "transactions", txId), tx);
+          due = advanceDate(due, rec.cycle || "monthly");
+          updates++;
+        } catch (e) {
+          console.error("Failed to auto-create recurring tx", txId, e);
+          break;
+        }
+      }
+      if (updates > 0 && !cancelled) {
+        try {
+          await setDoc(doc(db, "recurringExpenses", rec.id), { ...rec, nextDue: due });
+        } catch (e) {
+          console.error("Failed to advance recurring nextDue", rec.id, e);
+        }
+      }
+    };
+
+    (async () => {
+      for (const rec of recurring) {
+        if (cancelled) break;
+        await processOne(rec);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [recurring, unlocked, authUser, isViewer]);
 
   const handleLock = async () => {
     sessionStorage.removeItem("99xbet:unlocked");
@@ -2213,6 +2657,7 @@ export default function App() {
             { id: "dashboard", label: "Dashboard", icon: <BarChart3 className="w-4 h-4" /> },
             { id: "monthly", label: "Monthly", icon: <CalendarDays className="w-4 h-4" /> },
             { id: "partners", label: "Partners", icon: <Users className="w-4 h-4" /> },
+            { id: "recurring", label: "Recurring", icon: <RefreshCw className="w-4 h-4" />, editorOnly: true },
             { id: "history", label: "History", icon: <FileText className="w-4 h-4" /> },
             { id: "settings", label: "Settings", icon: <Lock className="w-4 h-4" />, editorOnly: true },
           ]
@@ -2242,6 +2687,7 @@ export default function App() {
             {tab === "dashboard" && <Dashboard entries={entries} />}
             {tab === "monthly" && <Monthly entries={entries} />}
             {tab === "partners" && <Partners entries={entries} transactions={transactions} partners={partners} readOnly={isViewer} />}
+            {tab === "recurring" && !isViewer && <RecurringExpenses recurring={recurring} onSave={saveRecurring} onDelete={deleteRecurring} />}
             {tab === "history" && <History entries={entries} onDeleteTransaction={deleteTransaction} onDeleteLegacy={deleteLegacyEntry} readOnly={isViewer} />}
             {tab === "settings" && !isViewer && <Settings entries={entries} partners={partners} onSavePartner={savePartner} onDeletePartner={deletePartner} />}
           </>
