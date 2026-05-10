@@ -41,25 +41,37 @@ const fmtAxis = (n) => {
 const today = () => new Date().toISOString().slice(0, 10);
 
 // Advance an ISO date string by one cycle (monthly, yearly, or weekly).
-// Handles month-end correctly (Jan 31 → Feb 28).
+// Pure string math to avoid timezone footguns: `new Date("2026-02-10T00:00:00")`
+// parses as local midnight, which becomes a different UTC date in any
+// non-UTC timezone, and toISOString() returns UTC — causing the date to
+// drift backwards by a day each cycle in timezones west of UTC.
 function advanceDate(isoDate, cycle) {
-  const d = new Date(isoDate + "T00:00:00");
+  const [yStr, mStr, dStr] = isoDate.split("-");
+  let year = parseInt(yStr, 10);
+  let month = parseInt(mStr, 10); // 1-12
+  let day = parseInt(dStr, 10);
+
   if (cycle === "weekly") {
-    d.setDate(d.getDate() + 7);
-  } else if (cycle === "yearly") {
-    d.setFullYear(d.getFullYear() + 1);
+    // Weekly add 7 days — use UTC math to stay timezone-safe
+    const utc = Date.UTC(year, month - 1, day);
+    const next = new Date(utc + 7 * 24 * 60 * 60 * 1000);
+    return next.toISOString().slice(0, 10);
+  }
+  if (cycle === "yearly") {
+    year += 1;
+    // Feb 29 -> Feb 28 in non-leap year
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    day = Math.min(day, lastDay);
   } else {
     // monthly (default)
-    const targetMonth = d.getMonth() + 1;
-    const targetYear = d.getFullYear() + (targetMonth > 11 ? 1 : 0);
-    const normalizedMonth = targetMonth % 12;
-    const targetDay = d.getDate();
-    // Move to first of target month, then cap day at month-end
-    d.setFullYear(targetYear, normalizedMonth, 1);
-    const lastDay = new Date(targetYear, normalizedMonth + 1, 0).getDate();
-    d.setDate(Math.min(targetDay, lastDay));
+    month += 1;
+    if (month > 12) { month = 1; year += 1; }
+    // Cap day at month-end (Jan 31 -> Feb 28)
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    day = Math.min(day, lastDay);
   }
-  return d.toISOString().slice(0, 10);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)}`;
 }
 
 // ---------- DATA MODEL HELPERS ----------
@@ -1060,7 +1072,7 @@ function MonthlyPLTooltip({ active, payload }) {
   );
 }
 
-function Dashboard({ entries }) {
+function Dashboard({ entries, transactions = [], recurring = [] }) {
   const stats = useMemo(() => {
     const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
     const totalIncome = entries.reduce((s, e) => s + e.income, 0);
@@ -1072,6 +1084,23 @@ function Dashboard({ entries }) {
     const last7 = sorted.slice(-7);
     const sum7 = last7.reduce((s, e) => s + e.profit, 0);
     const margin = totalIncome > 0 ? (totalProfit / totalIncome) * 100 : 0;
+
+    // Recurring expense metrics
+    // Predicted monthly burn = sum of all active recurring templates, normalized to monthly
+    const activeRecurring = recurring.filter((r) => r.status !== "paused");
+    const monthlyBurn = activeRecurring.reduce((sum, r) => {
+      const factor = r.cycle === "weekly" ? 4.33 : r.cycle === "yearly" ? 1 / 12 : 1;
+      return sum + (r.amount || 0) * factor;
+    }, 0);
+    // Actual recurring spend logged this month
+    const ymThis = today().slice(0, 7);
+    const recurringThisMonth = transactions
+      .filter((t) => t.source === "recurring" && t.date && t.date.startsWith(ymThis))
+      .reduce((s, t) => s + t.amount, 0);
+    // All-time recurring total
+    const recurringAllTime = transactions
+      .filter((t) => t.source === "recurring")
+      .reduce((s, t) => s + t.amount, 0);
 
     let running = 0;
     const chartData = sorted.map((e) => {
@@ -1110,13 +1139,14 @@ function Dashboard({ entries }) {
 
     return {
       totalIncome, totalExpenses, totalFixed, totalVariable, totalMarketing, totalProfit,
+      monthlyBurn, recurringThisMonth, recurringAllTime, activeRecurringCount: activeRecurring.length,
       sum7, margin, chartData,
       last30Data: chartData.slice(-30),
       monthlyData,
       bestDay: sorted.length ? sorted.reduce((a, b) => (b.profit > a.profit ? b : a)) : null,
       worstDay: sorted.length ? sorted.reduce((a, b) => (b.profit < a.profit ? b : a)) : null,
     };
-  }, [entries]);
+  }, [entries, transactions, recurring]);
 
   if (entries.length === 0) {
     return (
@@ -1136,6 +1166,14 @@ function Dashboard({ entries }) {
         <KpiCard label="Total Costs" value={fmt(stats.totalExpenses + stats.totalMarketing)} sub={`Fixed: ${fmt(stats.totalFixed)} · Var: ${fmt(stats.totalVariable)}`} accent="#f43f5e" icon={<TrendingDown className="w-4 h-4" />} />
         <KpiCard label="Last 7 Days" value={fmt(stats.sum7)} sub="Net P/L" accent="#0ea5e9" icon={<Calendar className="w-4 h-4" />} />
       </div>
+
+      {stats.activeRecurringCount > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <KpiCard label="Monthly Burn" value={fmt(stats.monthlyBurn)} sub={`${stats.activeRecurringCount} active recurring`} accent="#a78bfa" icon={<RefreshCw className="w-4 h-4" />} />
+          <KpiCard label="Recurring This Month" value={fmt(stats.recurringThisMonth)} sub="Auto-logged so far this month" accent="#0ea5e9" icon={<RefreshCw className="w-4 h-4" />} />
+          <KpiCard label="Recurring All-Time" value={fmt(stats.recurringAllTime)} sub="Total auto-logged" accent="#f43f5e" icon={<RefreshCw className="w-4 h-4" />} />
+        </div>
+      )}
 
       <div className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6">
         <div className="mb-4">
@@ -1459,20 +1497,28 @@ function History({ entries, onDeleteTransaction, onDeleteLegacy, readOnly = fals
 
 
 // ---------- MONTHLY ----------
-function Monthly({ entries }) {
+function Monthly({ entries, transactions = [] }) {
   const months = useMemo(() => {
     const map = {};
     entries.forEach((e) => {
       const ym = e.date.slice(0, 7);
-      if (!map[ym]) map[ym] = { ym, entries: [], income: 0, expenses: 0, marketing: 0, profit: 0 };
+      if (!map[ym]) map[ym] = { ym, entries: [], income: 0, expenses: 0, marketing: 0, profit: 0, fixedExpenses: 0, variableExpenses: 0, recurringExpenses: 0 };
       map[ym].entries.push(e);
       map[ym].income += e.income;
       map[ym].expenses += e.expenses;
       map[ym].marketing += e.marketing;
       map[ym].profit += e.profit;
+      map[ym].fixedExpenses += e.fixedExpenses || 0;
+      map[ym].variableExpenses += e.variableExpenses || 0;
+    });
+    // Layer recurring totals from transactions
+    transactions.forEach((t) => {
+      if (t.source !== "recurring" || !t.date) return;
+      const ym = t.date.slice(0, 7);
+      if (map[ym]) map[ym].recurringExpenses += t.amount;
     });
     return Object.values(map).sort((a, b) => b.ym.localeCompare(a.ym));
-  }, [entries]);
+  }, [entries, transactions]);
 
   const [selectedYm, setSelectedYm] = useState(null);
 
@@ -1544,7 +1590,7 @@ function Monthly({ entries }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KpiCard label="Net P/L" value={fmt(selectedMonth.profit)} sub={`${margin.toFixed(1)}% margin`} accent={selectedMonth.profit >= 0 ? "#10b981" : "#f43f5e"} icon={<DollarSign className="w-4 h-4" />} />
         <KpiCard label="Revenue" value={fmt(selectedMonth.income)} sub={`${selectedMonth.entries.length} days`} accent="#d4af37" icon={<TrendingUp className="w-4 h-4" />} />
-        <KpiCard label="Expenses" value={fmt(selectedMonth.expenses)} sub="Operating" accent="#f43f5e" icon={<TrendingDown className="w-4 h-4" />} />
+        <KpiCard label="Expenses" value={fmt(selectedMonth.expenses)} sub={selectedMonth.recurringExpenses > 0 ? `Recurring: ${fmt(selectedMonth.recurringExpenses)}` : `Fixed: ${fmt(selectedMonth.fixedExpenses)}`} accent="#f43f5e" icon={<TrendingDown className="w-4 h-4" />} />
         <KpiCard label="Marketing" value={fmt(selectedMonth.marketing)} sub="Spend" accent="#0ea5e9" icon={<Megaphone className="w-4 h-4" />} />
       </div>
 
@@ -2743,8 +2789,8 @@ export default function App() {
           <>
             {tab === "entry" && !isViewer && <EntryForm onSave={saveTransaction} dayMap={dayMap} partners={partners} />}
             {tab === "upload" && !isViewer && <SlipUpload onSave={saveTransaction} dayMap={dayMap} />}
-            {tab === "dashboard" && <Dashboard entries={entries} />}
-            {tab === "monthly" && <Monthly entries={entries} />}
+            {tab === "dashboard" && <Dashboard entries={entries} transactions={transactions} recurring={recurring} />}
+            {tab === "monthly" && <Monthly entries={entries} transactions={transactions} />}
             {tab === "partners" && <Partners entries={entries} transactions={transactions} partners={partners} readOnly={isViewer} />}
             {tab === "recurring" && !isViewer && <RecurringExpenses recurring={recurring} onSave={saveRecurring} onDelete={deleteRecurring} />}
             {tab === "history" && <History entries={entries} onDeleteTransaction={deleteTransaction} onDeleteLegacy={deleteLegacyEntry} readOnly={isViewer} />}
